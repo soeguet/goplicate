@@ -5,74 +5,103 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 )
 
-type Datei struct {
+type Files struct {
 	name string
 	path string
 	hash string
 }
 
-var datei []Datei
-var counter int
+func recursivelyReadFiles(currentPath string, wg *sync.WaitGroup, ch chan<- Files) {
+	defer wg.Done()
 
-func recusivlyReadFiles(currentPath string, path string) {
 	entries, err := os.ReadDir(currentPath)
 	if err != nil {
 		return
 	}
+
 	for _, d := range entries {
 		fullPath := filepath.Join(currentPath, d.Name())
+
 		if d.IsDir() {
-			recusivlyReadFiles(fullPath, path+"/"+d.Name())
+			wg.Add(1)
+			go recursivelyReadFiles(fullPath, wg, ch)
 		} else {
 			file, err := os.ReadFile(fullPath)
 			if err == nil {
 				h := sha256.New()
 				h.Write(file)
-				bs := h.Sum(nil)
+				hash := fmt.Sprintf("%x", h.Sum(nil))
 
-				newDatei := Datei{
+				ch <- Files{
 					name: d.Name(),
 					path: fullPath,
-					hash: fmt.Sprintf("%x", bs),
+					hash: hash,
 				}
-
-				datei = append(datei, newDatei)
-
-				counter++
 			}
 		}
 	}
 }
 
 func main() {
+	now := time.Now()
 
-	recusivlyReadFiles(".", ".")
+	files, counter := handleGoroutines()
 
-	for _, d := range datei {
+	printOverview(files)
+	determineDuplicates(files)
+	printResult(files, counter, now)
+}
+
+func handleGoroutines() ([]Files, int) {
+	filesChan := make(chan Files)
+	var wg sync.WaitGroup
+	var files []Files
+	var counter int
+
+	go func() {
+		for d := range filesChan {
+			files = append(files, d)
+			counter++
+		}
+	}()
+
+	wg.Add(1)
+	go recursivelyReadFiles(".", &wg, filesChan)
+
+	wg.Wait()
+	close(filesChan)
+	return files, counter
+}
+
+func printResult(files []Files, counter int, now time.Time) {
+	fmt.Printf("Total number of files: %d\n", len(files))
+	fmt.Println("Counter: ", counter)
+	fmt.Printf("Time passed: %v\n", time.Since(now))
+}
+
+func printOverview(files []Files) {
+	for _, d := range files {
 		fmt.Printf("File name: %s\nFile path: %s\nHash: %s\n\n", d.name, d.path, d.hash)
 	}
 	fmt.Println("_____________")
+}
 
-	duplikate := make(map[string][]Datei)
-
-	for _, d := range datei {
-		duplikate[d.hash] = append(duplikate[d.hash], d)
+func determineDuplicates(files []Files) {
+	duplicates := make(map[string][]Files)
+	for _, d := range files {
+		duplicates[d.hash] = append(duplicates[d.hash], d)
 	}
 
-	for mapKey, mapValue := range duplikate {
-
-		if len(mapValue) > 1 {
-
-			fmt.Printf("Duplicates for Hash: %s\n", mapKey)
-			for index, value := range mapValue {
-				fmt.Printf("%d: %s\n", index, value.path)
+	for hash, files := range duplicates {
+		if len(files) > 1 {
+			fmt.Printf("Duplicates for Hash: %s\n", hash)
+			for i, f := range files {
+				fmt.Printf("%d: %s\n", i, f.path)
 			}
 		}
-
 	}
-
-	fmt.Printf("Total number of files: %d\n", len(datei))
-	fmt.Println("Counter: ", counter)
 }
